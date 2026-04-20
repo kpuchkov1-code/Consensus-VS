@@ -1,0 +1,107 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "btk-aidd"
+version = "0.1.0"
+description = "Hybrid AI + physics virtual screening pipeline for Bruton's Tyrosine Kinase (BTK)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Kirill Puchkov", email = "kp425@ic.ac.uk" }]
+keywords = [
+    "drug-discovery",
+    "virtual-screening",
+    "BTK",
+    "AIDD",
+    "CADD",
+    "molecular-docking",
+    "machine-learning",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Chemistry",
+]
+dependencies = [
+    "rdkit>=2024.3.1",
+    "biopython>=1.83",
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "scikit-learn>=1.4",
+    "scipy>=1.12",
+    "matplotlib>=3.8",
+    "seaborn>=0.13",
+    "pydantic>=2.6",
+    "click>=8.1",
+    "pyyaml>=6.0",
+    "requests>=2.31",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+chembl = ["chembl-webresource-client>=0.10.9"]
+docking = ["vina>=1.2.5"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.4",
+    "black>=24.3",
+    "mypy>=1.9",
+]
+
+[project.scripts]
+btk-aidd = "btk_aidd.cli:cli"
+
+[project.urls]
+Homepage = "https://github.com/kpuchkov1-code/btk-aidd"
+Repository = "https://github.com/kpuchkov1-code/btk-aidd"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+btk_aidd = ["py.typed"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q --strict-markers"
+testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "requires_vina: tests that require an installed AutoDock Vina binary",
+    "requires_network: tests that require network access (ChEMBL / PDB)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "B", "UP", "SIM", "RUF"]
+# E501  long lines (handled by black)
+# RUF001 ambiguous unicode (we legitimately use en/em-dash + × in scientific prose)
+# RUF002 same as RUF001 but in docstrings
+# RUF003 same as RUF001 but in comments
+ignore = ["E501", "RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["N802", "N803"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

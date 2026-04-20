@@ -1,0 +1,68 @@
+# Default configuration for the BTK AIDD pipeline.
+# Values here can be overridden via CLI flags or a user-supplied YAML file.
+
+target:
+  name: BTK
+  chembl_id: CHEMBL5251
+  pdb_id: 4OT6
+  reference_ligand_resname: 1E8  # ibrutinib three-letter code in 4OT6
+
+data:
+  actives:
+    min_pchembl: 7.0            # pChEMBL >= 7  => IC50 <= 100 nM
+    activity_types: ["IC50", "Ki", "Kd"]
+    max_actives: 500
+  decoys:
+    count: 2000
+    similarity_cutoff: 0.35     # Tanimoto upper bound (decoy vs any active)
+    property_windows:
+      mw: 40.0
+      logp: 0.75
+      hba: 2
+      hbd: 2
+      rotatable: 2
+      charge: 0
+  random_seed: 42
+
+ligand_prep:
+  num_conformers: 1
+  mmff_variant: MMFF94
+  max_mmff_iters: 200
+  embed_seed: 42
+
+docking:
+  engine: cached                # one of: cached | vina
+  exhaustiveness: 16
+  num_poses: 5
+  box_padding: 8.0              # Angstroms around reference ligand centroid
+  cached_scores_csv: data/fixtures/cached_docking_scores.csv
+
+scoring:
+  physics:
+    pocket_shell_radius: 6.0    # Angstroms; protein atoms within this shell form the pocket
+    mmff_max_iters: 500
+    scale_factor: 0.05          # kcal/mol per arbitrary energy unit for normalisation
+  ml:
+    fingerprint: morgan
+    morgan_radius: 2
+    morgan_n_bits: 2048
+    test_size: 0.3
+    n_estimators: 300
+    random_seed: 42
+  consensus:
+    weights:
+      docking: 0.4
+      physics: 0.3
+      ml: 0.3
+
+evaluation:
+  enrichment_fractions: [0.01, 0.05, 0.10]
+  plot_formats: ["png"]
+  top_n_hits: 10
+
+runtime:
+  mode: fast                    # fast | full
+  fast_actives: 20
+  fast_decoys: 20
+  output_dir: data/results
+  log_level: INFO
