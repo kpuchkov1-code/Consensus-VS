@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "btk-aidd"
-version = "0.1.0"
+version = "0.2.0"
 description = "Hybrid AI + physics virtual screening pipeline for Bruton's Tyrosine Kinase (BTK)."
 readme = "README.md"
 requires-python = ">=3.10"

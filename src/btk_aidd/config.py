@@ -145,6 +145,50 @@ class ScoringConfig(BaseModel):
     consensus: ConsensusConfig = Field(default_factory=ConsensusConfig)
 
 
+class CovalentConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = True
+    bonus_kcal_mol: float = -2.5
+
+
+class ADMETConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = True
+    min_drug_likeness: float = 0.30
+
+
+class SelectivityConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = True
+    off_targets: list[str] = Field(
+        default_factory=lambda: ["EGFR", "ITK", "TEC", "BMX", "JAK2"]
+    )
+    panel_glob: str = "data/fixtures/offtarget_{kinase}.csv"
+    morgan_radius: int = 2
+    morgan_n_bits: int = 2048
+    n_estimators: int = 200
+    random_seed: int = 42
+
+
+class MoAConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = True
+    keep_assay_types: list[str] = Field(default_factory=lambda: ["B", "F"])
+
+
+class AnalysisConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    covalent: CovalentConfig = Field(default_factory=CovalentConfig)
+    admet: ADMETConfig = Field(default_factory=ADMETConfig)
+    selectivity: SelectivityConfig = Field(default_factory=SelectivityConfig)
+    moa: MoAConfig = Field(default_factory=MoAConfig)
+
+
 class EvaluationConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -188,6 +232,7 @@ class Config(BaseModel):
     ligand_prep: LigandPrepConfig = Field(default_factory=LigandPrepConfig)
     docking: DockingConfig = Field(default_factory=DockingConfig)
     scoring: ScoringConfig = Field(default_factory=ScoringConfig)
+    analysis: AnalysisConfig = Field(default_factory=AnalysisConfig)
     evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
 

@@ -5,10 +5,23 @@
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
 A hybrid **AI + physics** virtual-screening pipeline for **Bruton's Tyrosine
-Kinase (BTK)**. Combines AutoDock Vina docking, a literature-grounded
-physics-based rescorer, and a Morgan-fingerprint Random Forest classifier,
-then evaluates every scorer individually and under a z-normalised weighted
-consensus.
+Kinase (BTK)**, with mechanism-aware annotation. Combines AutoDock Vina
+docking, a literature-grounded physics rescorer, a Morgan-fingerprint
+Random Forest classifier, and a z-normalised weighted consensus — and on
+top of that adds four analysis layers that tell you **not just whether a
+molecule binds, but what kind of binder it is**:
+
+* **Covalent detection** — SMARTS-based warhead scanning (acrylamides,
+  chloroacetamides, vinyl sulfones, maleimides …) with a free-energy bonus
+  for ligands positioned for a Cys481 Michael addition (the BTK-specific
+  "ibrutinib mechanism").
+* **ADMET / drug-likeness** — Lipinski, Veber, Ghose, QED, SA score, PAINS,
+  Brenk alerts, combined into a 0-1 drug-likeness summary.
+* **Kinase selectivity** — per-kinase Random Forest models for EGFR / ITK /
+  TEC / BMX / JAK2 produce a selectivity index = `P(BTK) − max P(off-target)`.
+* **Mode-of-action filtering** — ChEMBL `assay_type` and `activity_comment`
+  are parsed at load time; agonists, unreliable rows, and ADME-only
+  measurements are filtered out before training the ML rescorer.
 
 The pipeline is a reference implementation of the three-legged
 **AI + physics-based modeling + medicinal chemistry** approach to small-
@@ -233,6 +246,11 @@ src/btk_aidd/
 │   ├── physics.py     PhysicsRescorer (four-term ΔG_physics)
 │   ├── ml.py          MLRescorer (Morgan-fp Random Forest)
 │   └── consensus.py   z-normalised weighted consensus
+├── analysis/
+│   ├── covalent.py    Cys481 warhead detection (SMARTS library)
+│   ├── admet.py       Lipinski/Veber/Ghose/QED/SA/PAINS/Brenk
+│   ├── selectivity.py per-kinase RF + selectivity index
+│   └── moa.py         ChEMBL assay-type + activity-comment filter
 ├── metrics/
 │   └── enrichment.py  ROC-AUC + EF@k + ScorerReport
 └── viz/
@@ -240,6 +258,20 @@ src/btk_aidd/
 ```
 
 All modules are <200 LOC and have a single responsibility.
+
+### What `scores.csv` actually contains
+
+Each row in `data/results/scores.csv` has **25 columns**:
+
+| group | columns |
+| --- | --- |
+| identity | `name`, `label` |
+| core scoring | `docking`, `physics`, `ml`, `docking_z`, `physics_z`, `ml_z`, `consensus` |
+| covalent | `has_warhead`, `warhead_type`, `covalent_bonus`, `consensus_covalent` |
+| ADMET | `mw`, `logp`, `qed`, `sa_score`, `passes_lipinski`, `passes_veber`, `pains_alert_count`, `drug_likeness` |
+| selectivity | `p_btk`, `max_off_target`, `max_off_target_prob`, `selectivity_index` |
+
+`consensus_covalent` = `consensus + covalent_bonus` — the covalent-aware final ranking that surfaces ibrutinib-class molecules at the top.
 
 ---
 

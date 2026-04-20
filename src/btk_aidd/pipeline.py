@@ -1,14 +1,15 @@
 """End-to-end pipeline orchestrator.
 
-Glues the data, docking, scoring, metric, and viz modules into a single
-``run_pipeline`` entry point. The orchestrator holds no state of its own; it
-pulls configuration from :class:`btk_aidd.config.Config` and writes all
-outputs under ``config.runtime.output_dir``.
+Glues the data, docking, scoring, analysis, metric, and viz modules into a
+single ``run_pipeline`` entry point. The orchestrator holds no state of its
+own; it pulls configuration from :class:`btk_aidd.config.Config` and writes
+all outputs under ``config.runtime.output_dir``.
 
 Execution stages::
 
-    load_inputs -> prepare_ligands -> dock -> rescore_physics
-                -> rescore_ml     -> consensus -> evaluate -> visualise
+    load_inputs -> MoA filter -> prepare_ligands -> dock -> rescore_physics
+                -> rescore_ml -> covalent -> ADMET -> selectivity
+                -> consensus  -> evaluate -> visualise
 
 Each stage is a small private function so unit tests can exercise them in
 isolation.
@@ -22,6 +23,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from btk_aidd.analysis import (
+    compute_admet_many,
+    filter_actives_by_moa,
+    score_covalent_many,
+    score_selectivity,
+    train_off_target_models,
+)
+from btk_aidd.analysis.moa import MoAFilter
 from btk_aidd.config import Config
 from btk_aidd.data.ligands import LigandPreparer, PreparedLigand
 from btk_aidd.docking.engine import DockingResult
@@ -63,6 +72,7 @@ def load_ligand_table(
     fast_actives: int,
     fast_decoys: int,
     rng_seed: int,
+    moa_filter: MoAFilter | None = None,
 ) -> list[LigandRow]:
     """Load actives and decoys into a single list of :class:`LigandRow`.
 
@@ -74,6 +84,8 @@ def load_ligand_table(
         fast_actives: Max actives in fast mode.
         fast_decoys: Max decoys in fast mode.
         rng_seed: Seed for the subsampling.
+        moa_filter: Optional MoA filter applied to actives before sampling.
+            Rows inconsistent with an inhibition mechanism are dropped.
 
     Returns:
         List of :class:`LigandRow`, actives first then decoys.
@@ -90,6 +102,9 @@ def load_ligand_table(
     if not required_decoys.issubset(decoys.columns):
         missing = sorted(required_decoys - set(decoys.columns))
         raise ValueError(f"Decoys CSV missing columns: {missing}")
+
+    if moa_filter is not None:
+        actives = filter_actives_by_moa(actives, moa_filter)
 
     if fast_mode:
         actives = actives.sample(
@@ -150,6 +165,11 @@ def run_pipeline(
     output_dir = _resolve(project_root, config.runtime.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    moa_filter = (
+        MoAFilter(keep_assay_types=frozenset(config.analysis.moa.keep_assay_types))
+        if config.analysis.moa.enabled
+        else None
+    )
     rows = load_ligand_table(
         actives_csv=actives_csv,
         decoys_csv=decoys_csv,
@@ -157,6 +177,7 @@ def run_pipeline(
         fast_actives=config.runtime.fast_actives,
         fast_decoys=config.runtime.fast_decoys,
         rng_seed=config.data.random_seed,
+        moa_filter=moa_filter,
     )
 
     prepared = _prepare(rows, config)
@@ -181,7 +202,9 @@ def run_pipeline(
     )
     test_physics = np.array([physics_totals[i] for i in test_indices], dtype=float)
     test_ml = ml_split.test_scores
+    test_ml_prob = ml_split.test_probabilities
     test_labels = ml_split.test_labels
+    test_smiles = [prepared[i].smiles for i in test_indices]
 
     consensus = consensus_score(
         names=test_names,
@@ -191,6 +214,22 @@ def run_pipeline(
         weights=config.scoring.consensus.weights,
     ).frame
     consensus.insert(1, "label", test_labels)
+
+    # ------------------------------------------------------------------ mechanism
+    consensus = _annotate_covalent(consensus, test_names, test_smiles, config)
+    consensus = _annotate_admet(consensus, test_names, test_smiles, config)
+    consensus = _annotate_selectivity(
+        consensus,
+        test_names,
+        test_smiles,
+        test_ml_prob,
+        config,
+        project_root,
+    )
+    if "covalent_bonus" in consensus.columns:
+        consensus["consensus_covalent"] = (
+            consensus["consensus"] + consensus["covalent_bonus"]
+        )
 
     scores_csv = output_dir / "scores.csv"
     consensus.to_csv(scores_csv, index=False)
@@ -334,3 +373,113 @@ def _default_box():
     from btk_aidd.data.receptor import DockingBox
 
     return DockingBox(center=(0.0, 0.0, 0.0), size=(20.0, 20.0, 20.0))
+
+
+# ------------------------------------------------------------------ analysis
+
+
+def _annotate_covalent(
+    frame: pd.DataFrame,
+    names: list[str],
+    smiles: list[str],
+    config: Config,
+) -> pd.DataFrame:
+    if not config.analysis.covalent.enabled:
+        return frame
+    reports = score_covalent_many(
+        list(zip(names, smiles, strict=True)),
+        bonus_if_productive=config.analysis.covalent.bonus_kcal_mol,
+    )
+    cov_df = pd.DataFrame(
+        {
+            "name": [r.name for r in reports],
+            "has_warhead": [r.has_warhead for r in reports],
+            "warhead_type": [r.warhead_type or "" for r in reports],
+            "covalent_bonus": [r.bonus_kcal_mol for r in reports],
+        }
+    )
+    return frame.merge(cov_df, on="name", how="left")
+
+
+def _annotate_admet(
+    frame: pd.DataFrame,
+    names: list[str],
+    smiles: list[str],
+    config: Config,
+) -> pd.DataFrame:
+    if not config.analysis.admet.enabled:
+        return frame
+    reports = compute_admet_many(list(zip(names, smiles, strict=True)))
+    admet_df = pd.DataFrame(
+        {
+            "name": [r.name for r in reports],
+            "mw": [r.mw for r in reports],
+            "logp": [r.logp for r in reports],
+            "qed": [r.qed for r in reports],
+            "sa_score": [r.sa_score for r in reports],
+            "passes_lipinski": [r.passes_lipinski for r in reports],
+            "passes_veber": [r.passes_veber for r in reports],
+            "pains_alert_count": [len(r.pains_alerts) for r in reports],
+            "drug_likeness": [r.drug_likeness for r in reports],
+        }
+    )
+    return frame.merge(admet_df, on="name", how="left")
+
+
+def _annotate_selectivity(
+    frame: pd.DataFrame,
+    names: list[str],
+    smiles: list[str],
+    p_btk: np.ndarray,
+    config: Config,
+    project_root: Path,
+) -> pd.DataFrame:
+    if not config.analysis.selectivity.enabled:
+        return frame
+    panels: dict[str, pd.DataFrame] = {}
+    for kinase in config.analysis.selectivity.off_targets:
+        panel_path = Path(
+            config.analysis.selectivity.panel_glob.format(kinase=kinase)
+        )
+        if not panel_path.is_absolute():
+            panel_path = project_root / panel_path
+        if not panel_path.exists():
+            logger.warning(
+                "Off-target panel missing for %s at %s — skipping that kinase",
+                kinase,
+                panel_path,
+            )
+            continue
+        panels[kinase] = pd.read_csv(panel_path)
+    if not panels:
+        logger.warning(
+            "Selectivity enabled but no panels loaded — skipping selectivity scoring"
+        )
+        return frame
+
+    models = train_off_target_models(
+        panels,
+        morgan_radius=config.analysis.selectivity.morgan_radius,
+        morgan_n_bits=config.analysis.selectivity.morgan_n_bits,
+        n_estimators=config.analysis.selectivity.n_estimators,
+        random_seed=config.analysis.selectivity.random_seed,
+    )
+    # MLRescorer returns negated probabilities as scores; recover positive P(BTK).
+    reports = score_selectivity(
+        names=names,
+        smiles=smiles,
+        p_btk=p_btk,
+        off_target_models=models,
+        morgan_radius=config.analysis.selectivity.morgan_radius,
+        morgan_n_bits=config.analysis.selectivity.morgan_n_bits,
+    )
+    sel_df = pd.DataFrame(
+        {
+            "name": [r.name for r in reports],
+            "p_btk": [r.p_btk for r in reports],
+            "max_off_target": [r.max_off_target for r in reports],
+            "max_off_target_prob": [r.max_off_target_probability for r in reports],
+            "selectivity_index": [r.selectivity_index for r in reports],
+        }
+    )
+    return frame.merge(sel_df, on="name", how="left")

@@ -55,6 +55,25 @@ scoring:
       physics: 0.3
       ml: 0.3
 
+analysis:
+  covalent:
+    enabled: true
+    bonus_kcal_mol: -2.5          # free-energy bonus for a productive Cys481 warhead
+  admet:
+    enabled: true
+    min_drug_likeness: 0.30       # filter warning threshold (doesn't reject)
+  selectivity:
+    enabled: true
+    off_targets: ["EGFR", "ITK", "TEC", "BMX", "JAK2"]
+    panel_glob: "data/fixtures/offtarget_{kinase}.csv"
+    morgan_radius: 2
+    morgan_n_bits: 2048
+    n_estimators: 200
+    random_seed: 42
+  moa:
+    enabled: true
+    keep_assay_types: ["B", "F"]
+
 evaluation:
   enrichment_fractions: [0.01, 0.05, 0.10]
   plot_formats: ["png"]

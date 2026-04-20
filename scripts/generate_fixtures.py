@@ -4,11 +4,12 @@ Run once::
 
     python scripts/generate_fixtures.py
 
-Writes three files under ``data/fixtures/``:
+Writes under ``data/fixtures/``:
 
-* ``btk_actives.csv``            ChEMBL-schema actives table (curated SMILES)
+* ``btk_actives.csv``            ChEMBL-schema actives with assay_type + activity_comment
 * ``btk_decoys.csv``             matched-property decoy table
 * ``cached_docking_scores.csv``  synthetic Vina-like affinities for both
+* ``offtarget_<KINASE>.csv``     per-kinase panels for selectivity training
 
 The SMILES are drawn from a hand-curated list of published kinase inhibitors
 (actives) and diverse drug-like scaffolds (decoys). All SMILES are validated
@@ -17,6 +18,10 @@ warning. Docking scores follow realistic Gaussian distributions:
 
 * actives:  N(mean = -9.2 kcal/mol, sigma = 0.9)
 * decoys:   N(mean = -6.4 kcal/mol, sigma = 1.2)
+
+Off-target panels use BTK actives + decoys as a proxy pool. Each kinase has
+a deterministically sampled set of "actives" (drawn so that selectivity is
+non-trivial: some BTK actives also hit EGFR/ITK, others do not).
 
 The seed is fixed (42) so the generated CSVs are byte-identical across runs.
 """
@@ -212,6 +217,25 @@ DECOY_SMILES: list[str] = [
 ]
 
 
+OFF_TARGET_KINASES: tuple[str, ...] = ("EGFR", "ITK", "TEC", "BMX", "JAK2")
+
+# Seeded per-kinase cross-reactivity rates: fraction of BTK actives that also
+# hit this off-target (plausible real-world numbers; JAK2 is the most
+# selective-friendly).
+_OFF_TARGET_HIT_RATE: dict[str, float] = {
+    "EGFR": 0.25,
+    "ITK": 0.45,
+    "TEC": 0.60,
+    "BMX": 0.35,
+    "JAK2": 0.15,
+}
+
+# Ibrutinib is clinically known to have promiscuity with ITK, TEC, BMX and
+# light EGFR. We inject one "ibrutinib-like" molecule into the actives so
+# the covalent detector and selectivity scorer have a realistic example.
+_IBRUTINIB_SMILES = "C=CC(=O)N1CCC[C@H](C1)n1nc(c2c1ncnc2N)-c1ccc(Oc2ccccc2)cc1"
+
+
 def main(output_dir: str | None = None) -> None:
     out_dir = Path(output_dir) if output_dir else Path(__file__).resolve().parents[1] / "data" / "fixtures"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -220,12 +244,28 @@ def main(output_dir: str | None = None) -> None:
 
     # --- Actives ----------------------------------------------------------------
     actives_rows: list[dict[str, object]] = []
+    # Insert the ibrutinib archetype first so it is always present.
+    actives_rows.append(
+        {
+            "molecule_chembl_id": "CHEMBL1873475",
+            "canonical_smiles": Chem.MolToSmiles(Chem.MolFromSmiles(_IBRUTINIB_SMILES)),
+            "standard_type": "IC50",
+            "standard_value_nM": 0.5,
+            "pchembl_value": 9.3,
+            "target_chembl_id": "CHEMBL5251",
+            "assay_type": "F",
+            "activity_comment": "inhibitor",
+        }
+    )
+
     for chembl_id, smi, pchembl in ACTIVE_SMILES:
         mol = Chem.MolFromSmiles(smi)
         if mol is None:
             print(f"WARN  unparseable active SMILES skipped: {chembl_id} {smi}", file=sys.stderr)
             continue
         canonical = Chem.MolToSmiles(mol)
+        # 80% functional assays, 20% binding-only
+        assay_type = "F" if rng.random() < 0.8 else "B"
         actives_rows.append(
             {
                 "molecule_chembl_id": chembl_id,
@@ -234,6 +274,8 @@ def main(output_dir: str | None = None) -> None:
                 "standard_value_nM": float(10 ** (9 - pchembl)),
                 "pchembl_value": float(pchembl),
                 "target_chembl_id": "CHEMBL5251",
+                "assay_type": assay_type,
+                "activity_comment": "inhibitor" if rng.random() < 0.9 else "",
             }
         )
     actives_df = pd.DataFrame(actives_rows)
@@ -266,6 +308,42 @@ def main(output_dir: str | None = None) -> None:
     cached_df = pd.DataFrame(cached_rows)
     cached_df.to_csv(out_dir / "cached_docking_scores.csv", index=False)
     print(f"Wrote {len(cached_df)} cached scores -> {out_dir / 'cached_docking_scores.csv'}")
+
+    # --- Off-target kinase panels ----------------------------------------------
+    # For each off-target kinase, sample a subset of BTK actives as "also
+    # active against this kinase" (polypharmacology) plus all decoys as
+    # negatives. The cross-reactivity rate is set per kinase so ITK/TEC look
+    # promiscuous and JAK2 looks cleanly selective, matching clinical data.
+    for kinase in OFF_TARGET_KINASES:
+        hit_rate = _OFF_TARGET_HIT_RATE[kinase]
+        n_hits = int(round(len(actives_df) * hit_rate))
+        hit_indices = rng.choice(len(actives_df), size=n_hits, replace=False)
+        hit_mask = np.zeros(len(actives_df), dtype=bool)
+        hit_mask[hit_indices] = True
+
+        rows: list[dict[str, object]] = []
+        for i, smi in enumerate(actives_df["canonical_smiles"]):
+            rows.append(
+                {
+                    "canonical_smiles": str(smi),
+                    "label": 1 if hit_mask[i] else 0,
+                    "source": "btk_actives",
+                }
+            )
+        for smi in decoys_df["canonical_smiles"]:
+            rows.append(
+                {
+                    "canonical_smiles": str(smi),
+                    "label": 0,
+                    "source": "decoy",
+                }
+            )
+        panel_df = pd.DataFrame(rows)
+        panel_df.to_csv(out_dir / f"offtarget_{kinase}.csv", index=False)
+        print(
+            f"Wrote {len(panel_df)} rows ({n_hits} actives) -> "
+            f"{out_dir / ('offtarget_' + kinase + '.csv')}"
+        )
 
 
 if __name__ == "__main__":

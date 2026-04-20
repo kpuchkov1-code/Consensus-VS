@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-20
 **Author:** Kirill Puchkov
-**Status:** implemented (v0.1.0)
+**Status:** implemented (v0.2.0 — mechanism-aware analysis added)
 
 ## Problem
 
@@ -143,7 +143,43 @@ PDB ─────┴─▶ receptor + pocket   ├─▶ docked ─┐
 7. Mention the extension path: swap `PhysicsRescorer` for OpenMM MM-GBSA;
    swap `CachedEngine` for GNINA.
 
-## Out-of-scope next steps
+## v0.2.0 — mechanism-aware analysis
+
+After v0.1 the pipeline answered "does it bind?" but not "what kind of
+binder, and is it a real drug?" v0.2 adds four analysis modules:
+
+1. **`analysis/covalent.py`** — SMARTS library of 10 electrophilic
+   warheads (acrylamide, propiolamide, chloroacetamide, vinyl sulfone,
+   maleimide, acyl fluoride, sulfonyl fluoride, epoxide, boronic acid,
+   generic Michael acceptor). Detects the ibrutinib / acalabrutinib /
+   zanubrutinib warhead pattern. Ligands with a warhead receive a
+   −2.5 kcal/mol bonus (Copeland 2006 on-target residence time estimate)
+   that is added to the consensus score as `consensus_covalent`. In live-
+   docking mode, the bonus is conditional on the warhead being within
+   6 Å of Cys481's sulfur; in cached mode, the bonus is applied when the
+   warhead is detected (benefit-of-the-doubt).
+
+2. **`analysis/admet.py`** — Lipinski Ro5, Veber, Ghose, QED (Bickerton
+   2012), SA score (Ertl-Schuffenhauer 2009 contrib), PAINS (Baell 2010),
+   Brenk. Folded into a 0–1 `drug_likeness` summary with literature-
+   backed weights.
+
+3. **`analysis/selectivity.py`** — trains independent Morgan-fingerprint
+   Random Forest classifiers per off-target kinase (EGFR, ITK, TEC, BMX,
+   JAK2). Computes
+   `selectivity_index = P(active at BTK) − max P(active at off-target)`.
+   Positive → selective, negative → promiscuous.
+
+4. **`analysis/moa.py`** — reads ChEMBL `assay_type` (B / F / A / T) and
+   `activity_comment` at data-load time. Rejects ADME (A) and toxicity
+   (T) assays and drops rows annotated as agonists / activators.
+   Computes per-row `moa_confidence` (0–1) from assay strength.
+
+All four are wired through `config.analysis.*` and annotate the
+`scores.csv` with an additional 14 columns. No existing outputs changed.
+New tests cover 96 %/94 %/89 %/96 % of the four modules respectively.
+
+## Remaining next steps
 
 * **MM-GBSA backend** using OpenMM — documented extension point.
 * **Meeko-based** ligand PDBQT prep with rigorous Gasteiger charges.
@@ -151,3 +187,5 @@ PDB ─────┴─▶ receptor + pocket   ├─▶ docked ─┐
 * **Generative** molecule design (DiffSBDD / Pocket2Mol) as a front-stage
   source of candidates.
 * **Active learning** prioritisation to cut the docking compute budget.
+* **Real covalent docking** (e.g. CovDock) to compute the Cys481 distance
+  that the `score_covalent(cys481_distance=...)` parameter already accepts.
